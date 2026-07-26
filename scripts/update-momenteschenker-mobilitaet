@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_DIR="/opt/momenteschenker-mobilitaet"
+BACKUP_DIR="/var/backups/momenteschenker-mobilitaet"
+REPO="chevy-type/momenteschenker-mobilitaet"
+
+[[ $EUID -eq 0 ]] || { echo "Bitte als root ausführen."; exit 1; }
+[[ -d "$APP_DIR" ]] || { echo "Installation nicht gefunden: $APP_DIR"; exit 1; }
+
+read -rsp "GitHub Fine-grained Token (Contents: read): " GITHUB_TOKEN
+echo
+trap 'unset GITHUB_TOKEN' EXIT
+
+mkdir -p "$BACKUP_DIR"
+stamp=$(date +%Y%m%d-%H%M%S)
+cd "$APP_DIR"
+
+echo "Erstelle Sicherung..."
+docker compose exec -T db pg_dump -U "$(grep '^POSTGRES_USER=' .env | cut -d= -f2-)" -Fc "$(grep '^POSTGRES_DB=' .env | cut -d= -f2-)" > "$BACKUP_DIR/db-$stamp.dump"
+cp .env "$BACKUP_DIR/env-$stamp"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"; unset GITHUB_TOKEN' EXIT
+curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/$REPO/tarball/main" -o "$tmp/app.tar.gz"
+tar -xzf "$tmp/app.tar.gz" -C "$tmp"
+source_dir=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n1)
+
+rsync -a --delete --exclude=.env --exclude=data/ "$source_dir/" "$APP_DIR/"
+docker compose build --pull
+docker compose run --rm web python app/manage.py migrate --noinput
+docker compose run --rm web python app/manage.py collectstatic --noinput
+docker compose up -d
+
+echo "Update abgeschlossen."
+docker compose ps
