@@ -30,6 +30,13 @@ read -r -s -p "GitHub Fine-grained Token (Contents: read für ${APP_REPO}): " GH
 printf '\n'
 [[ -n "$GH_TOKEN" ]] || die "Ein Token wird benötigt, solange das App-Repository privat ist."
 
+info "Prüfe Zugriff auf das private Repository"
+curl -fsS \
+  -H "Authorization: Bearer ${GH_TOKEN}" \
+  -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/${APP_REPO}" >/dev/null \
+  || die "Der GitHub-Token hat keinen Lesezugriff auf ${APP_REPO}."
+
 CTID="$(pvesh get /cluster/nextid)"
 STORAGE="$(pvesm status -content rootdir | awk 'NR==2{print $1}')"
 [[ -n "$STORAGE" ]] || die "Kein Storage mit rootdir-Unterstützung gefunden."
@@ -70,11 +77,12 @@ pct push "$CTID" "$TOKEN_FILE" /run/mobilitaet-github-token --perms 0600
 unset GH_TOKEN
 
 info "Installiere Docker und Anwendung"
-pct exec "$CTID" -- bash -s -- "$APP_REPO" "$APP_REF" "$INSTALLER_REPO" <<'IN_CONTAINER'
+pct exec "$CTID" -- bash -s -- "$APP_REPO" "$APP_REF" "$INSTALLER_REPO" "$IP" <<'IN_CONTAINER'
 set -Eeuo pipefail
 APP_REPO="$1"
 APP_REF="$2"
 INSTALLER_REPO="$3"
+CONTAINER_IP="$4"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y ca-certificates curl git openssl rsync
@@ -98,10 +106,25 @@ cd /opt/momenteschenker-mobilitaet
 cp .env.example .env
 SECRET="$(openssl rand -hex 32)"
 DBPASS="$(openssl rand -hex 24)"
+ADMINPASS="$(openssl rand -base64 18 | tr -d '=+/')"
 sed -i "s/^DJANGO_SECRET_KEY=.*/DJANGO_SECRET_KEY=${SECRET}/" .env
 sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${DBPASS}/" .env
+sed -i "s/^DJANGO_ALLOWED_HOSTS=.*/DJANGO_ALLOWED_HOSTS=mobil.momenteschenker.de,localhost,127.0.0.1,${CONTAINER_IP}/" .env
 chmod 0600 .env
+
 docker compose up -d --build
+for _ in {1..40}; do
+  docker compose exec -T web python manage.py check >/dev/null 2>&1 && break
+  sleep 3
+done
+
+docker compose exec -T \
+  -e DJANGO_SUPERUSER_USERNAME=admin \
+  -e DJANGO_SUPERUSER_EMAIL=admin@local.invalid \
+  -e DJANGO_SUPERUSER_PASSWORD="$ADMINPASS" \
+  web python manage.py createsuperuser --noinput || true
+printf '%s\n' "$ADMINPASS" > /root/momenteschenker-mobilitaet-admin-password
+chmod 0600 /root/momenteschenker-mobilitaet-admin-password
 
 cat >/usr/local/sbin/momenteschenker-mobilitaet-status <<'EOF'
 #!/usr/bin/env bash
@@ -126,13 +149,20 @@ EOF
 curl -fsSL "https://raw.githubusercontent.com/${INSTALLER_REPO}/main/scripts/update-momenteschenker-mobilitaet" -o /usr/local/sbin/update-momenteschenker-mobilitaet
 curl -fsSL "https://raw.githubusercontent.com/${INSTALLER_REPO}/main/scripts/restore-momenteschenker-mobilitaet" -o /usr/local/sbin/restore-momenteschenker-mobilitaet
 chmod +x /usr/local/sbin/momenteschenker-mobilitaet-* /usr/local/sbin/update-momenteschenker-mobilitaet /usr/local/sbin/restore-momenteschenker-mobilitaet
+printf 'ADMIN_PASSWORD=%s\n' "$ADMINPASS" >/run/mobilitaet-install-result
+chmod 0600 /run/mobilitaet-install-result
 IN_CONTAINER
+
+ADMINPASS="$(pct exec "$CTID" -- cat /run/mobilitaet-install-result | cut -d= -f2-)"
+pct exec "$CTID" -- rm -f /run/mobilitaet-install-result
 
 info "Prüfe Anwendung"
 for _ in {1..40}; do
   if curl -fsS "http://${IP}:${APP_PORT}/health/" >/dev/null 2>&1; then
     green "$APP_NAME wurde installiert."
-    printf '\nContainer: %s\nIP: %s\nInterner Aufruf: http://%s:%s\n\n' "$CTID" "$IP" "$IP" "$APP_PORT"
+    printf '\nContainer: %s\nIP: %s\nInterner Aufruf: http://%s:%s\n' "$CTID" "$IP" "$IP" "$APP_PORT"
+    printf 'Lokaler Admin: admin\nTemporäres Passwort: %s\n\n' "$ADMINPASS"
+    printf 'Das Passwort liegt zusätzlich im LXC unter /root/momenteschenker-mobilitaet-admin-password.\n'
     printf 'Nächster Schritt: Traefik für mobil.momenteschenker.de auf %s:%s konfigurieren.\n' "$IP" "$APP_PORT"
     exit 0
   fi
