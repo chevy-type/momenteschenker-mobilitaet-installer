@@ -1,0 +1,18 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: |
+          bash -n momenteschenker-mobilitaet.sh
+          bash -n scripts/update-momenteschenker-mobilitaet
+          bash -n scripts/restore-momenteschenker-mobilitaet
+      - name: Run ShellCheck
+        run: shellcheck -x momenteschenker-mobilitaet.sh scripts/update-momenteschenker-mobilitaet scripts/restore-momenteschenker-mobilitaet
