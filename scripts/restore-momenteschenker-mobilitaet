@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_DIR="/opt/momenteschenker-mobilitaet"
+BACKUP_DIR="/var/backups/momenteschenker-mobilitaet"
+
+[[ $EUID -eq 0 ]] || { echo "Bitte als root ausführen."; exit 1; }
+[[ -d "$APP_DIR" ]] || { echo "Installation nicht gefunden: $APP_DIR"; exit 1; }
+
+mapfile -t dumps < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'db-*.dump' -printf '%f\n' | sort -r)
+((${#dumps[@]})) || { echo "Keine Datenbanksicherung gefunden."; exit 1; }
+
+echo "Verfügbare Sicherungen:"
+select dump in "${dumps[@]}"; do
+  [[ -n "${dump:-}" ]] && break
+done
+
+read -rp "Sicherung $dump wirklich wiederherstellen? [y/N] " confirm
+[[ "$confirm" =~ ^[YyJj]$ ]] || exit 0
+
+cd "$APP_DIR"
+user=$(grep '^POSTGRES_USER=' .env | cut -d= -f2-)
+db=$(grep '^POSTGRES_DB=' .env | cut -d= -f2-)
+
+docker compose up -d db
+docker compose exec -T db dropdb -U "$user" --if-exists "$db"
+docker compose exec -T db createdb -U "$user" "$db"
+docker compose exec -T db pg_restore -U "$user" -d "$db" --clean --if-exists < "$BACKUP_DIR/$dump"
+docker compose up -d
+
+echo "Restore abgeschlossen."
+docker compose ps
