@@ -149,12 +149,9 @@ EOF
 curl -fsSL "https://raw.githubusercontent.com/${INSTALLER_REPO}/main/scripts/update-momenteschenker-mobilitaet" -o /usr/local/sbin/update-momenteschenker-mobilitaet
 curl -fsSL "https://raw.githubusercontent.com/${INSTALLER_REPO}/main/scripts/restore-momenteschenker-mobilitaet" -o /usr/local/sbin/restore-momenteschenker-mobilitaet
 chmod +x /usr/local/sbin/momenteschenker-mobilitaet-* /usr/local/sbin/update-momenteschenker-mobilitaet /usr/local/sbin/restore-momenteschenker-mobilitaet
-printf 'ADMIN_PASSWORD=%s\n' "$ADMINPASS" >/run/mobilitaet-install-result
-chmod 0600 /run/mobilitaet-install-result
 IN_CONTAINER
 
-ADMINPASS="$(pct exec "$CTID" -- cat /run/mobilitaet-install-result | cut -d= -f2-)"
-pct exec "$CTID" -- rm -f /run/mobilitaet-install-result
+ADMINPASS="$(pct exec "$CTID" -- cat /root/momenteschenker-mobilitaet-admin-password)"
 
 info "Prüfe Anwendung"
 for _ in {1..40}; do
