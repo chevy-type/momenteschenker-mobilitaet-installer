@@ -55,6 +55,27 @@ update-momenteschenker-mobilitaet
 restore-momenteschenker-mobilitaet
 ```
 
+## Bestehende Installation aktualisieren
+
+Bei Installationen ohne `.git`-Verzeichnis wird nicht mit `git pull`, sondern mit dem Update-Skript aktualisiert. Das Skript sichert vor jedem Update die PostgreSQL-Datenbank und die `.env`, lädt anschließend den aktuellen Stand aus dem privaten GitHub-Repository, führt Migrationen und `collectstatic` aus und erstellt die Container neu.
+
+Einmalig den aktuellen Updater laden:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/chevy-type/momenteschenker-mobilitaet-installer/main/scripts/update-momenteschenker-mobilitaet \
+  -o /usr/local/sbin/update-momenteschenker-mobilitaet
+chmod 0755 /usr/local/sbin/update-momenteschenker-mobilitaet
+```
+
+Danach aktualisieren:
+
+```bash
+update-momenteschenker-mobilitaet
+```
+
+Dabei wird der Fine-grained GitHub-Token erneut verdeckt abgefragt und nicht gespeichert.
+
 ## Nach der Installation
 
 1. Die angezeigte IP in der Fritzbox dauerhaft diesem Gerät zuweisen.
