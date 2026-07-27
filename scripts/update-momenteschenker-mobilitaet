@@ -4,34 +4,65 @@ set -Eeuo pipefail
 APP_DIR="/opt/momenteschenker-mobilitaet"
 BACKUP_DIR="/var/backups/momenteschenker-mobilitaet"
 REPO="chevy-type/momenteschenker-mobilitaet"
+INSTALLER_REPO="chevy-type/momenteschenker-mobilitaet-installer"
 
 [[ $EUID -eq 0 ]] || { echo "Bitte als root ausführen."; exit 1; }
 [[ -d "$APP_DIR" ]] || { echo "Installation nicht gefunden: $APP_DIR"; exit 1; }
+[[ -f "$APP_DIR/.env" ]] || { echo "Konfiguration nicht gefunden: $APP_DIR/.env"; exit 1; }
 
 read -rsp "GitHub Fine-grained Token (Contents: read): " GITHUB_TOKEN
 echo
-trap 'unset GITHUB_TOKEN' EXIT
+[[ -n "$GITHUB_TOKEN" ]] || { echo "Ein GitHub-Token wird benötigt."; exit 1; }
+
+cleanup() {
+  [[ -n "${tmp:-}" ]] && rm -rf "$tmp"
+  unset GITHUB_TOKEN
+}
+trap cleanup EXIT
+
+curl -fsS \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/$REPO" >/dev/null \
+  || { echo "Der Token hat keinen Lesezugriff auf $REPO."; exit 1; }
 
 mkdir -p "$BACKUP_DIR"
 stamp=$(date +%Y%m%d-%H%M%S)
 cd "$APP_DIR"
 
-echo "Erstelle Sicherung..."
-docker compose exec -T db pg_dump -U "$(grep '^POSTGRES_USER=' .env | cut -d= -f2-)" -Fc "$(grep '^POSTGRES_DB=' .env | cut -d= -f2-)" > "$BACKUP_DIR/db-$stamp.dump"
+echo "Erstelle Datenbank- und Konfigurationssicherung..."
+docker compose exec -T db pg_dump \
+  -U "$(grep '^POSTGRES_USER=' .env | cut -d= -f2-)" \
+  -Fc "$(grep '^POSTGRES_DB=' .env | cut -d= -f2-)" \
+  > "$BACKUP_DIR/db-$stamp.dump"
 cp .env "$BACKUP_DIR/env-$stamp"
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"; unset GITHUB_TOKEN' EXIT
-curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/$REPO/tarball/main" -o "$tmp/app.tar.gz"
-tar -xzf "$tmp/app.tar.gz" -C "$tmp"
-source_dir=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n1)
+echo "Lade aktuelle Anwendung aus GitHub..."
+curl -fsSL \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/$REPO/tarball/main" \
+  -o "$tmp/app.tar.gz"
+mkdir -p "$tmp/source"
+tar -xzf "$tmp/app.tar.gz" --strip-components=1 -C "$tmp/source"
 
-rsync -a --delete --exclude=.env --exclude=data/ "$source_dir/" "$APP_DIR/"
+rsync -a --delete \
+  --exclude=.env \
+  --exclude=data/ \
+  "$tmp/source/" "$APP_DIR/"
+
+echo "Baue Container neu und führe Migrationen aus..."
 docker compose build --pull
-docker compose run --rm web python app/manage.py migrate --noinput
-docker compose run --rm web python app/manage.py collectstatic --noinput
-docker compose up -d
+docker compose run --rm web python manage.py migrate --noinput
+docker compose run --rm web python manage.py collectstatic --clear --noinput
+docker compose up -d --force-recreate
 
-echo "Update abgeschlossen."
+# Aktualisierer selbst ebenfalls auf dem neuesten Stand halten.
+curl -fsSL \
+  "https://raw.githubusercontent.com/$INSTALLER_REPO/main/scripts/update-momenteschenker-mobilitaet" \
+  -o /usr/local/sbin/update-momenteschenker-mobilitaet
+chmod 0755 /usr/local/sbin/update-momenteschenker-mobilitaet
+
+echo "Update abgeschlossen. Sicherung: $BACKUP_DIR (Zeitstempel $stamp)"
 docker compose ps
